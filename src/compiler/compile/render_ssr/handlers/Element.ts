@@ -1,53 +1,11 @@
 import { is_void } from '../../../utils/names';
-import Attribute from '../../nodes/Attribute';
-import Class from '../../nodes/Class';
 import { get_attribute_value, get_class_attribute_value } from './shared/get_attribute_value';
 import { get_slot_scope } from './shared/get_slot_scope';
+import { boolean_attributes } from './shared/boolean_attributes';
 import Renderer, { RenderOptions } from '../Renderer';
 import Element from '../../nodes/Element';
 import { x } from 'code-red';
 import Expression from '../../nodes/shared/Expression';
-
-// source: https://gist.github.com/ArjanSchouten/0b8574a6ad7f5065a5e7
-const boolean_attributes = new Set([
-	'async',
-	'autocomplete',
-	'autofocus',
-	'autoplay',
-	'border',
-	'challenge',
-	'checked',
-	'compact',
-	'contenteditable',
-	'controls',
-	'default',
-	'defer',
-	'disabled',
-	'formnovalidate',
-	'frameborder',
-	'hidden',
-	'indeterminate',
-	'ismap',
-	'loop',
-	'multiple',
-	'muted',
-	'nohref',
-	'noresize',
-	'noshade',
-	'novalidate',
-	'nowrap',
-	'open',
-	'readonly',
-	'required',
-	'reversed',
-	'scoped',
-	'scrolling',
-	'seamless',
-	'selected',
-	'sortable',
-	'spellcheck',
-	'translate'
-]);
 
 export default function(node: Element, renderer: Renderer, options: RenderOptions & {
 	slot_scopes: Map<any, any>;
@@ -70,75 +28,77 @@ export default function(node: Element, renderer: Renderer, options: RenderOption
 
 	renderer.add_string(`<${node.name}`);
 
-	const class_expression = node.classes.length > 0 && node.classes
-		.map((class_directive: Class) => {
-			const { expression, name } = class_directive;
-			const snippet = expression ? expression.node : x`#ctx.${name}`;
-			return x`${snippet} ? "${name}" : ""`;
-		})
-		.reduce((lhs, rhs) => x`${lhs} + ' ' + ${rhs}`);
+	const class_expression_list = node.classes.map(class_directive => {
+		const { expression, name } = class_directive;
+		const snippet = expression ? expression.node : x`#ctx.${name}`; // TODO is this right?
+		return x`${snippet} ? "${name}" : ""`;
+	});
+	if (node.needs_manual_style_scoping) {
+		class_expression_list.push(x`"${node.component.stylesheet.id}"`);
+	}
+	const class_expression =
+		class_expression_list.length > 0 &&
+		class_expression_list.reduce((lhs, rhs) => x`${lhs} + ' ' + ${rhs}`);
 
-	let add_class_attribute = class_expression ? true : false;
-
-	if (node.attributes.find(attr => attr.is_spread)) {
+	if (node.attributes.some(attr => attr.is_spread)) {
 		// TODO dry this out
 		const args = [];
 		node.attributes.forEach(attribute => {
 			if (attribute.is_spread) {
 				args.push(attribute.expression.node);
 			} else {
-				if (attribute.name === 'value' && node.name === 'textarea') {
+				const name = attribute.name.toLowerCase();
+				if (name === 'value' && node.name.toLowerCase() === 'textarea') {
 					node_contents = get_attribute_value(attribute);
 				} else if (attribute.is_true) {
 					args.push(x`{ ${attribute.name}: true }`);
 				} else if (
-					boolean_attributes.has(attribute.name) &&
+					boolean_attributes.has(name) &&
 					attribute.chunks.length === 1 &&
 					attribute.chunks[0].type !== 'Text'
 				) {
 					// a boolean attribute with one non-Text chunk
-					args.push(x`{ ${attribute.name}: ${(attribute.chunks[0] as Expression).node} }`);
-				} else if (attribute.name === 'class' && class_expression) {
-					// Add class expression
-					args.push(x`{ ${attribute.name}: [${get_class_attribute_value(attribute)}, ${class_expression}].join(' ').trim() }`);
+					args.push(x`{ ${attribute.name}: ${(attribute.chunks[0] as Expression).node} || null }`);
 				} else {
-					args.push(x`{ ${attribute.name}: ${attribute.name === 'class' ? get_class_attribute_value(attribute) : get_attribute_value(attribute)} }`);
+					args.push(x`{ ${attribute.name}: ${get_attribute_value(attribute)} }`);
 				}
 			}
 		});
 
-		renderer.add_expression(x`@spread([${args}])`);
+		renderer.add_expression(x`@spread([${args}], ${class_expression})`);
 	} else {
-		node.attributes.forEach((attribute: Attribute) => {
-			if (attribute.type !== 'Attribute') return;
-
-			if (attribute.name === 'value' && node.name === 'textarea') {
+		let add_class_attribute = !!class_expression;
+		node.attributes.forEach(attribute => {
+			const name = attribute.name.toLowerCase();
+			if (name === 'value' && node.name.toLowerCase() === 'textarea') {
 				node_contents = get_attribute_value(attribute);
 			} else if (attribute.is_true) {
 				renderer.add_string(` ${attribute.name}`);
 			} else if (
-				boolean_attributes.has(attribute.name) &&
+				boolean_attributes.has(name) &&
 				attribute.chunks.length === 1 &&
 				attribute.chunks[0].type !== 'Text'
 			) {
 				// a boolean attribute with one non-Text chunk
 				renderer.add_string(` `);
 				renderer.add_expression(x`${(attribute.chunks[0] as Expression).node} ? "${attribute.name}" : ""`);
-			} else if (attribute.name === 'class' && class_expression) {
+			} else if (name === 'class' && class_expression) {
 				add_class_attribute = false;
-				renderer.add_string(` class="`);
+				renderer.add_string(` ${attribute.name}="`);
 				renderer.add_expression(x`[${get_class_attribute_value(attribute)}, ${class_expression}].join(' ').trim()`);
 				renderer.add_string(`"`);
 			} else if (attribute.chunks.length === 1 && attribute.chunks[0].type !== 'Text') {
-				const { name } = attribute;
 				const snippet = (attribute.chunks[0] as Expression).node;
-				renderer.add_expression(x`@add_attribute("${name}", ${snippet}, ${boolean_attributes.has(name) ? 1 : 0})`);
+				renderer.add_expression(x`@add_attribute("${attribute.name}", ${snippet}, ${boolean_attributes.has(name) ? 1 : 0})`);
 			} else {
 				renderer.add_string(` ${attribute.name}="`);
-				renderer.add_expression(attribute.name === 'class' ? get_class_attribute_value(attribute) : get_attribute_value(attribute));
+				renderer.add_expression((name === 'class' ? get_class_attribute_value : get_attribute_value)(attribute));
 				renderer.add_string(`"`);
 			}
 		});
+		if (add_class_attribute) {
+			renderer.add_expression(x`@add_classes([${class_expression}].join(' ').trim())`);
+		}
 	}
 
 	node.bindings.forEach(binding => {
@@ -164,8 +124,8 @@ export default function(node: Element, renderer: Renderer, options: RenderOption
 		}
 	});
 
-	if (add_class_attribute) {
-		renderer.add_expression(x`@add_classes([${class_expression}].join(' ').trim())`);
+	if (options.hydratable && options.head_id) {
+		renderer.add_string(` data-svelte="${options.head_id}"`);
 	}
 
 	renderer.add_string('>');
